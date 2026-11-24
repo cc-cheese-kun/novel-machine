@@ -1,4 +1,13 @@
-"""大綱的檢查和取用。
+"""Check and use the planner's chapter outline (章节/第NNN章/大纲.md).
+
+The planner model writes an outline before the writer model writes prose.
+This script validates it so a bad outline is caught before the expensive step.
+
+Usage: python3 tools/outline.py check N [--instr 'reader instruction'] [--no-ling]
+       python3 tools/outline.py path  N    print the chapter file path from the outline's title
+       python3 tools/outline.py focus N    if the outline changes the focus, write 记忆/当前焦点.md
+
+大綱的檢查和取用。
 
 用法：python3 tools/outline.py check N [--instr '讀者的指令'] [--no-ling]   檢查大綱格式
       python3 tools/outline.py path  N                                     按大綱章名給出正文路徑
@@ -11,20 +20,32 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from book import FOCUS, TEXT, chapters, read, section, title_of, workdir, write
 
+# Allowed scene types: set piece, daily life, the couple alone, wrap-up.
+# 場次類型：大場面、日常、兩人、收尾。
 KINDS = ('大場面', '日常', '兩人', '收尾')
+# Required outline sections: title, focus, scenes, the couple's scene, must have,
+# must not have, foreshadowing, ending.  大綱必須有的小節。
 NEEDED = ('章名', '焦點', '場次', '兩人的戲', '必須有', '不能有', '伏筆', '結尾')
 
 
 def load(n):
+    """Outline text for chapter n ('' if missing).  第 n 章的大綱。"""
     return read(os.path.join(workdir(n), '大纲.md'))
 
 
 def title(text):
+    """Chapter title from the '## 章名' section, quotes stripped.  取章名。"""
     line = section(text, '章名').splitlines()
     return re.sub(r'^[-\s]+', '', line[0]).strip('「」 ') if line else ''
 
 
 def check(n, instruction='', no_ling=False):
+    """Return a list of problems; empty means the outline passes.
+    `instruction` is what the reader asked for: if it was a concrete plot request
+    (not just "continue"), every detail must be listed under "must have", because
+    losing a reader's plot detail is the worst failure of this pipeline.
+    `no_ling` = the heroine is absent this chapter, so no couple scene is required.
+    回傳問題清單，空的就是通過。"""
     text = load(n)
     if not text.strip():
         return [f'沒有大綱文件 章节/第{n:03d}章/大纲.md']
@@ -59,11 +80,13 @@ def check(n, instruction='', no_ling=False):
 
 
 def path(n):
+    """正文/第NNN章_<title>.txt"""
     name = title(load(n))
     return os.path.join(TEXT, f'第{n:03d}章_{name}.txt')
 
 
 def focus(n):
+    """Write the outline's new focus to 当前焦点.md unless it says 'unchanged'.  大綱改了焦點就寫進去。"""
     body = section(load(n), '焦點')
     text = re.sub(r'^-\s*', '', body).strip()
     if not text or text.startswith('不變') or text.startswith('不变'):

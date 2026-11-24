@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""測「進行中」標記和 --續跑：用假 agy 跑到一半 kill -9 整個進程組（模擬 VM 重啟），再看後面能不能接上。
+"""Test the in-progress marker and --續跑 (resume): run with the fake agy, kill -9 the
+whole process group halfway (simulating a VM reboot), then check the run can pick up.
+
+Usage: python3 tests/test_resume.py   (runs in a temporary copy, never touches the real repo)
+
+測「進行中」標記和 --續跑：用假 agy 跑到一半 kill -9 整個進程組（模擬 VM 重啟），再看後面能不能接上。
 
 用法：python3 tests/test_resume.py        （在副本裡跑，不碰正式倉庫）
 """

@@ -1,4 +1,10 @@
-"""把 正文/ 的章節按章號合併成 全书.txt，每章前加章名。不經過模型，不會漏字。
+"""Merge every chapter in 正文/ into one file, 全书.txt, in chapter order.
+
+Usage: python3 tools/build_book.py
+Pure text concatenation with a heading per chapter - no model involved, so nothing
+can be dropped. Fails on duplicate chapter numbers, warns on gaps.
+
+把 正文/ 的章節按章號合併成 全书.txt，每章前加章名。不經過模型，不會漏字。
 
 用法：python3 tools/build_book.py
 """
@@ -32,6 +38,8 @@ def main():
     for number, title, path in chapters:
         with open(path, encoding='utf-8') as handle:
             body = handle.read().strip()
+        # Count CJK characters only (the usual way to count Chinese word length).
+        # 只數漢字（中文字數的通常算法）。
         total += len(re.findall(r'[一-鿿]', body))
         heading = f'第{number}章' + (f'　{title}' if title else '')
         parts.append(f'{heading}\n\n{body}\n')

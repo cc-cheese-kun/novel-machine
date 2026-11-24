@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Print the newest chapter in full, so a chat assistant can forward it to a phone.
 # 打印最新一章全文，给私人助手转发到手机
 BOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 f="$(ls "$BOOK"/正文/第*章*.txt 2>/dev/null | sort | tail -1)"

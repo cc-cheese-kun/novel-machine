@@ -1,4 +1,17 @@
-"""越界守衛：模型每次動手前存一份底，動完只放行它該寫的文件，別的改動一律還原。
+"""Scope guard: snapshot the repo before every model call, and afterwards keep only
+the files the model was allowed to touch; every other change is rolled back.
+
+Why: at chapter 44 a script the model left behind overwrote chapter 31 down to
+1,800 characters and littered tools/ with make_ch44.py files. Prompt rules alone
+did not stop this, so the pipeline enforces scope in code instead.
+
+Usage: python3 tools/guard.py save
+       python3 tools/guard.py restore N ALLOWED_PATH...
+       (chapter N's own workspace 章节/第NNN章/ is always allowed)
+What restore does: deleted files are restored, edited files are reverted, and
+new files are moved to 章节/第NNN章/草稿/越界/ (kept for inspection, not deleted).
+
+越界守衛：模型每次動手前存一份底，動完只放行它該寫的文件，別的改動一律還原。
 
 第 44 章時，模型留下的腳本把第 31 章覆蓋成 1800 字，還在 tools/ 裡留了一堆 make_ch44.py。這裡就是防這個。
 
@@ -13,12 +26,16 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from book import ROOT, workdir
 
+# Where the "before" snapshot lives.  存底的位置。
 BASE = os.path.join(ROOT, 'logs', '.guard')
+# Folders whose files the model must not change unless explicitly allowed.
+# 這些資料夾裡的文件，沒被允許就不許動。
 WATCH_DIRS = ('正文', '设定', '记忆', '文风', 'tools', 'bin', '章节', '往作')
 SKIP = ('__pycache__', 'logs', '.git', '.novel.lock')
 
 
 def files(top, base=ROOT):
+    """Yield every file under `top` as a path relative to `base`.  列出 top 下所有文件（相對路徑）。"""
     for folder, dirs, names in os.walk(top):
         dirs[:] = [d for d in dirs if d not in SKIP]
         for name in names:
@@ -26,6 +43,7 @@ def files(top, base=ROOT):
 
 
 def watched():
+    """Files at the repo root plus everything in WATCH_DIRS.  根目錄的文件＋WATCH_DIRS 裡的全部文件。"""
     out = [n for n in os.listdir(ROOT) if os.path.isfile(os.path.join(ROOT, n)) and n not in SKIP]
     for d in WATCH_DIRS:
         out += list(files(os.path.join(ROOT, d)))
@@ -38,6 +56,8 @@ def save():
         dst = os.path.join(BASE, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(os.path.join(ROOT, rel), dst)
+    # Also remember the top-level names, so new top-level folders can be caught later.
+    # 另記一份根目錄的名字，之後才抓得到新冒出來的頂層資料夾。
     with open(os.path.join(BASE, '.tops'), 'w', encoding='utf-8') as handle:
         handle.write('\n'.join(sorted(os.listdir(ROOT))))
     return 0
@@ -55,6 +75,8 @@ def restore(n, allowed):
     for rel in sorted(watched() | before):
         if rel in allow or rel.startswith(own):
             continue
+        # Three cases: deleted -> restore; new -> move aside; edited -> revert.
+        # 三種情況：被刪→還原；多出來→移走；被改→還原。
         here, base = os.path.join(ROOT, rel), os.path.join(BASE, rel)
         if rel in before and not os.path.exists(here):
             os.makedirs(os.path.dirname(here), exist_ok=True)

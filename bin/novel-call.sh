@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# Write one chapter: bookkeeping -> writer model writes from the plan -> screening -> commit.
+# Usage: bin/novel-call.sh '繼續'                (continue: the model decides what happens next)
+#        bin/novel-call.sh '<a plot direction>'  (write exactly what the reader asked for)
+#        bin/novel-call.sh '重寫第N章 <request>'  (rewrite from chapter N)
+#        bin/novel-call.sh --續跑 [N]             (resume: only re-run the steps after an interruption)
+#        bin/novel-call.sh 全書 | 唠唠… | 改設定… | 停下   (build book / chat / edit settings / stop)
+#        bin/novel-call.sh --doctor              (check the environment, no model call)
+# One model call per chapter (prose + bookkeeping); a second only if a hard check fails.
+# In-progress marker: 章节/第NNN章/进行中 records the stage and is deleted only after the
+# commit. If the process is killed (reboot, dropped connection) the marker remains and the
+# next call stops instead of treating a half-finished chapter as done.
+# Exit codes: 0 ok; 1 model call failed; 2 failed checks; 3 environment/memory wrong or
+# previous chapter unfinished; 64 usage; 75 another run is in progress.
+#
 # 寫一章（第一版的寫法）：記賬 → 寫手照走向直接寫 → 粗篩 → 提交
 # 用法：bin/novel-call.sh '繼續'
 #       bin/novel-call.sh '一段走向'
@@ -20,6 +34,7 @@ LIMIT_PLAN="${LIMIT_PLAN:-600}"
 LIMIT_WRITE="${LIMIT:-2400}"
 LIMIT_FIX="${LIMIT_FIX:-900}"
 PY="$(command -v python3 || command -v python || true)"
+# Must run on both macOS and a Linux VM: stock macOS has bash 3.2, no timeout/flock, different base64 flags.
 # Mac 和遠端 VM 都要能跑：macOS 自帶 bash 3.2，沒有 timeout、flock，base64 參數也不一樣
 if command -v timeout >/dev/null; then TIMEOUT=(timeout)
 elif command -v gtimeout >/dev/null; then TIMEOUT=(gtimeout)
@@ -47,9 +62,11 @@ doctor() {
   return $ok
 }
 
+# ── In-progress marker ─────────────────────────────────
 # ── 進行中標記 ──────────────────────────────────────────
+# The marker is 章节/第NNN章/进行中, one "key=value" per line; never committed.
 # 標記文件在 章节/第NNN章/进行中，一行一項「鍵=值」；不進 git（提交時排除）
-pending_n() {  # 印出有標記的最大章號；沒有就什麼都不印
+pending_n() {  # print the highest chapter with a marker, or nothing. 印出有標記的最大章號；沒有就什麼都不印
   local f n best=""
   for f in 章节/第*章/进行中; do
     [ -f "$f" ] || continue
@@ -62,7 +79,7 @@ pending_n() {  # 印出有標記的最大章號；沒有就什麼都不印
 mark_path() { printf '章节/第%03d章/进行中' "$1"; }
 mval() { sed -n "s/^$2=//p" "$(mark_path "$1")" 2>/dev/null | head -1; }
 latest() { "$PY" -c 'import sys; sys.path.insert(0,"tools"); import book; print(book.latest())'; }
-chapter_file() { ls "$BOOK"/正文/第"$(printf %03d "$1")"章_*.txt 2>/dev/null | head -1; }  # 寫手自己定章名，按章號找
+chapter_file() { ls "$BOOK"/正文/第"$(printf %03d "$1")"章_*.txt 2>/dev/null | head -1; }  # the writer picks the title, so find by number. 寫手自己定章名，按章號找
 
 if [ "${1:-}" = "--doctor" ]; then
   doctor; rc=$?
@@ -84,6 +101,7 @@ exec 9>"$BOOK/.novel.lock"
 if command -v flock >/dev/null; then
   flock -n 9 || { echo "另一次調用還在寫，等它結束" >&2; exit 75; }
 else
+  # macOS has no flock: use a directory as the lock with a pid inside; clear it if that process is gone.
   # macOS 沒有 flock：用目錄當鎖，裡面記 pid；進程已經不在了就當舊鎖清掉
   LOCKDIR="$BOOK/.novel.lock.d"
   if ! mkdir "$LOCKDIR" 2>/dev/null; then
@@ -100,6 +118,7 @@ fi
 mkdir -p logs
 LOG="logs/$(date +%Y%m%d-%H%M%S).log"
 
+# Call the model once: time-limited, output also tee'd to the log.
 # 調一次模型：限時、輸出同時進日誌
 call() {
   local limit="$1" prompt="$2"
@@ -111,6 +130,7 @@ call() {
   return "$rc"
 }
 
+# Commit and push. The marker is never committed; if SAFE_ADD is set, commit only those paths (on resume the guard snapshot can't be trusted).
 # 提交並推送。標記文件不提交；SAFE_ADD 有值時只提交這些路徑（續跑時守衛底稿不可信用）
 commit() {
   [ -n "${NOPUSH:-}" ] && return 0
@@ -122,6 +142,7 @@ commit() {
     git -C "$BOOK" add -A -- . ':(exclude,glob)**/进行中' 2>/dev/null
   fi
   git -C "$BOOK" diff --cached --quiet 2>/dev/null && return 0
+  # If the VM has no git identity, use a default one, otherwise the commit fails and the chapter never gets pushed.
   # VM 上沒設 git 身份時用預設的（cc），不然提交直接失敗、章節推不上去
   local who=(); git -C "$BOOK" config user.email >/dev/null || who=(-c user.name=cc -c user.email=cc@local)
   if git -C "$BOOK" ${who[@]+"${who[@]}"} commit -q -m "$1"; then
@@ -131,6 +152,7 @@ commit() {
   fi
 }
 
+# Write the marker: current stage. Start time is written only once.
 # 寫標記：mark 階段。開始時間只在第一次寫
 mark() {
   MARK_START="${MARK_START:-$(date '+%F %T')}"
@@ -144,9 +166,11 @@ mark() {
     echo "指令=$(printf '%s' "$INSTR" | b64e)"
   } >"$MARK"
 }
+# The run ends normally here (success, failed check or model failure all count; rerunning is safe): delete the marker and exit.
 # 流程在這裡正常結束（成功、沒過檢查、模型失敗都算，下次重跑就行）：刪標記再退出
 end() { [ -n "${MARK:-}" ] && rm -f "$MARK"; exit "$1"; }
 
+# Scope guard: snapshot before each model call, restore after. meta records which chapter/step the snapshot belongs to, so resume can trust it.
 # 越界守衛：每次調模型前存底，調完還原。meta 記下這份底是哪一章、哪一步前存的，續跑時靠它確認底稿可信
 guard_save() { "$PY" tools/guard.py save && printf '%s %s\n' "$N" "$1" >logs/.guard.meta; }
 guard_restore() { "$PY" tools/guard.py restore "$N" "$@" | tee -a "$LOG"; }
@@ -157,12 +181,14 @@ guard_trusted() {
   esac
 }
 
+# Character reminder goes first in the writer prompt: seeing "子航" the model drifts into the canon Chu Zihang, and files alone don't stop it.
 # 人設提醒放在寫手提示最前面：模型看到「子航」會自動套成楚子航，光靠文件壓不住
 build_remind() {
   REMIND="【你在寫一部長篇小說，文筆參考江南的《龍族》（學他的寫法，不搬原作的人物和情節）。這是第 ${N} 章，不是記流水賬：這章圍繞一件事寫（多半是過日子的事，不是每章都要賭約和比賽），寫出它怎麼起、怎麼變、怎麼收；不要把一天從早到晚過一遍，不要從上課開場（路標點名要的除外）。】【先讀 AGENTS.md，照它列的順序讀材料，寫作規矩只有 设定/规则.md 一份。主角子航是原創人物，不是《龍族》的楚子航：沒有言靈、沒有村雨、不用君焰、不暴血、不開邁巴赫、沒有專屬名刀。他懶、嘴貧、常出糗，不是慫，只是嫌麻煩；口氣照 设定/子航.md，不學上一章末尾。全章 10000 字以上、4 到 5 場有事發生的戲，9000 是底線不是目標。】"
   case " ${FLAGS[*]:-} " in *" --wrap "*) REMIND="$REMIND【讀者要把這段劇情寫完：在戲裡收線，不寫「落下帷幕」式總結；待更新.md 的「最新扣子」寫「- 無（讀者要自己加新劇情）」。】" ;; esac
 }
 
+# Screening: check.py plus the 待更新.md format check. A missing 待更新.md also fails (no bookkeeping means the next chapter's memory guard would block).
 # 粗篩：check.py 加 待更新.md 格式；沒有 待更新.md 也算沒過（寫手沒記賬，下一章會被記憶守衛卡住）
 screen() {
   "$PY" tools/check.py ${CHECK[@]+"${CHECK[@]}"} --fed 文风/旁白範本.md "$CH" >"$W/检查.txt"
@@ -175,6 +201,7 @@ screen() {
   ! grep -q '^FAIL' "$W/检查.txt"
 }
 
+# Steps 4-5: screen -> one fix round if it fails -> update focus only after passing -> commit. Shared by the normal run and --續跑 (resume).
 # 第 4、5 步：粗篩 → 沒過修稿一次 → 過了才動焦點 → 提交。正常流程和 --續跑 共用
 finish_chapter() {
   mark 粗篩
@@ -205,12 +232,14 @@ ${fails}
   end 0
 }
 
+# --續跑 [N] (resume): for the chapter with an in-progress marker, run the remaining steps.
 # --續跑 [N]：對有「進行中」標記的那一章，補跑後面的步驟
 resume() {
   local want="${1:-}" pn
   pn="$(pending_n)"
   if [ -z "$pn" ]; then
     if [ -n "$want" ] && [ "$want" = "$(latest)" ] && [ -f "章节/第$(printf %03d "$want")章/设定.md" ]; then
+      # Chapters interrupted before markers existed: rebuild a marker from the workspace; the instruction and flags are unknown, so check without --long/--no-ling/--wrap.
       # 標記功能加進來之前就斷掉的章：按工作區補一個標記，指令和開關已經不知道，檢查不帶 --long/--no-ling/--wrap
       N="$want"; NNN="$(printf %03d "$N")"; W="章节/第${NNN}章"; MARK="$W/进行中"
       FLAGS=(); CHECK=(); INSTR="（補跑，原指令不明）"
@@ -252,6 +281,7 @@ resume() {
   finish_chapter
 }
 
+# Chat only / edit settings / stop: skip the chapter pipeline and hand straight to the model (AGENTS.md covers these).
 # 只聊天、只改設定、停手：不走寫章流程，直接交給模型（AGENTS.md 裡有這幾條的做法）
 case "$1" in
   唠唠*|嘮嘮*|停下*)
@@ -263,6 +293,7 @@ case "$1" in
 esac
 
 INSTR="$*"
+# "重寫第N章 <request>" (rewrite chapter N): archive chapter N onwards, roll memory back, then write chapter N as new.
 # 「重寫第N章 要求」：第 N 章以後收進 旧版/、記憶退回，再當成寫新的第 N 章
 N="$(printf '%s' "$1" | sed -nE 's/^重(寫|写)第0*([0-9]+)章.*/\2/p')"
 if [ -z "$N" ] && printf '%s' "$1" | grep -qE '^重(寫|写)'; then
@@ -271,9 +302,10 @@ if [ -z "$N" ] && printf '%s' "$1" | grep -qE '^重(寫|写)'; then
 fi
 pn="$(pending_n)"
 if [ -n "$N" ]; then
-  rm -f 章节/第*章/进行中   # 重寫就是放棄沒跑完的那章；先刪標記，免得跟著工作區被收進 旧版/ 再被提交
+  rm -f 章节/第*章/进行中   # rewriting abandons the unfinished chapter; delete its marker first so it isn't archived and committed. 重寫就是放棄沒跑完的那章；先刪標記，免得跟著工作區被收進 旧版/ 再被提交
   last="$(latest)"
   if [ "$N" -gt "$last" ]; then
+    # This chapter has no prose yet (died before planner/writer): set aside the unfinished workspace and leftover 待更新.md; memory is already at the previous chapter.
     # 這章連正文都沒寫出來（斷在規劃師或寫手之前）：把未完成的工作區和殘留的 待更新.md 收起來，記憶本來就停在上一章
     if [ "$N" -eq $((last + 1)) ] && [ -d "章节/第$(printf %03d "$N")章" ]; then
       d="旧版/重寫前_$(date +%Y%m%d-%H%M%S)_未完成"; mkdir -p "$d"
@@ -288,6 +320,7 @@ if [ -n "$N" ]; then
   fi
   INSTR="重寫這一章（舊稿在 旧版/，不要讀）。讀者的要求：${INSTR#*章}"
 else
+  # Don't start a new chapter while the previous one is unfinished: its text already counts, and merging its unchecked 待更新.md would record unverified facts in memory.
   # 上一章沒跑完就不能接著寫新章：它的正文已經算進章數，待更新.md 也還沒過檢查，這時去併記憶會把沒驗過的賬記進去
   if [ -n "$pn" ]; then
     echo "停：第 $pn 章上次沒跑完（停在「$(mval "$pn" 階段)」，開始於 $(mval "$pn" 開始)），不去寫第 $((pn + 1)) 章。" >&2
@@ -299,12 +332,14 @@ else
     fi
     exit 3
   fi
+  # The reader asking for a new chapter means they accept the previous one: merge its 待更新.md into memory first.
   # 讀者接著寫新章，代表接受了上一章：先把 待更新.md 併進記憶
   if [ -f 记忆/待更新.md ]; then
     "$PY" tools/merge_update.py || { echo "记忆/待更新.md 沒併成功，按上面的 FAIL 改好再跑" >&2; exit 3; }
   fi
 fi
 
+# Memory guard: if 进度.md lags behind the text, the model is missing events (chapter 26 lost a plot resolution this way).
 # 記憶守衛：进度.md 落後正文，中間的事模型不知道（第 26 章的收線就這樣丟過）
 latest_n="$(latest)"
 mem_n="$(sed -nE 's/.*對應章節：第0*([0-9]+)章.*/\1/p' 记忆/进度.md | head -1)"
@@ -316,11 +351,13 @@ fi
 
 N=$((latest_n + 1)); NNN="$(printf %03d "$N")"; W="章节/第${NNN}章"
 mkdir -p "$W"
-rm -f "$W/检查.txt"   # 上一次嘗試留下的
+rm -f "$W/检查.txt"   # left over from the previous attempt. 上一次嘗試留下的
 echo "第 $N 章：$INSTR" | tee -a "$LOG"
+# Instruction summary for the commit message, cut by character (the VM may use the C locale, where bash cuts bytes and produces garbage).
 # 提交信息裡的指令摘要；按字截（VM 的 locale 可能是 C，bash 會按字節截斷成亂碼）
 SHORT="$("$PY" -c 'import sys; print(sys.argv[1][:20])' "$INSTR")"
 
+# Flags inside the instruction.
 # 指令裡的開關
 FLAGS=(); CHECK=()
 case "$INSTR" in *寫多點*|*写多点*|*想寫多長*|*想写多长*) FLAGS+=(--long); CHECK+=(--long) ;; esac
@@ -328,10 +365,12 @@ if printf '%s' "$INSTR" | grep -qE '零(不在|不出|沒在|没在|不跟|不�
 if printf '%s' "$INSTR" | grep -qE '寫完|写完|收尾|收線|收线|完結|完结|不(要|用)?留扣子|不留(懸念|悬念)'; then FLAGS+=(--wrap); CHECK+=(--wrap); fi
 build_remind
 
+# From here on the chapter is "in progress": the marker stays until end.
 # 從這裡開始是「進行中」：標記在，流程走到 end 才刪
 MARK="$W/进行中"; MARK_START=""
 mark 寫手
 
+# ── Writer (write the prose from the plan, then the bookkeeping note) ──
 # ── 寫手（照走向直接寫正文，再記賬） ─────────────────
 HINTS="$("$PY" tools/compose.py write "$N" "$INSTR")" || end 3
 WRITE_PROMPT="$REMIND${HINTS}
@@ -344,5 +383,6 @@ guard_restore ${CH_REL:+"$CH_REL"} 记忆/待更新.md
 [ -n "$CH" ] && [ -f "$CH" ] || { echo "寫手沒寫出第 ${N} 章正文（退出碼 $rc），日誌 $LOG" >&2; end 1; }
 echo "正文：${CH_REL}"
 
+# ── 4-5. Screen -> fix -> focus -> commit ────────────────
 # ── 4、5. 粗篩 → 修稿 → 焦點 → 提交 ───────────────────
 finish_chapter

@@ -1,4 +1,13 @@
-"""從第 N 章開始重寫：第 N 章到最新一章（正文和 章节/ 工作區）收進 旧版/，記憶退回第 N-1 章寫完時。
+"""Rewrite from chapter N: archive chapters N..latest and roll memory back to just
+after chapter N-1.
+
+Usage: python3 tools/rewrite_from.py N
+Chapters N and later (text and 章节/ workspaces) move into 旧版/重寫前_<time>/
+- nothing is deleted. Memory files are restored from the snapshot saved when
+chapter N-1 was finished. Then write chapter N normally and continue forward;
+never rewrite backwards.
+
+從第 N 章開始重寫：第 N 章到最新一章（正文和 章节/ 工作區）收進 旧版/，記憶退回第 N-1 章寫完時。
 
 用法：python3 tools/rewrite_from.py N
 
@@ -15,7 +24,11 @@ from book import MEMORY, OLD, ROOT, SNAPSHOT_FILES, SNAPSHOTS, UPDATE, chapters,
 
 
 def focus_from_rewritten(start):
-    """当前焦点.md 是不是第 start 章以後的規劃師改的（merge_update.py 會寫上「第 N 章寫手更新」，舊的是「規劃時更新」）。"""
+    """Was 当前焦点.md (current focus) last changed by chapter `start` or later?
+    If yes it belongs to the chapters being rewritten and must be rolled back;
+    if not, a human edited it by hand and it is kept.
+
+    当前焦点.md 是不是第 start 章以後的規劃師改的（merge_update.py 會寫上「第 N 章寫手更新」，舊的是「規劃時更新」）。"""
     m = re.search(r'第 (\d+) 章(?:規劃時|寫手)更新', read(os.path.join(MEMORY, '当前焦点.md')))
     return bool(m) and int(m.group(1)) >= start
 
@@ -35,6 +48,8 @@ def main():
         print(f'FAIL 沒有第 {start - 1} 章寫完時的記憶快照（{os.path.relpath(snapshot, ROOT)}），不能自動退回')
         return 1
 
+    # Archive folder named by time; add _2, _3... if two rewrites land in the same second.
+    # 收納資料夾按時間命名；同一秒重寫兩次就加 _2、_3。
     archive = os.path.join(OLD, '重寫前_' + time.strftime('%Y%m%d-%H%M%S'))
     base, k = archive, 2
     while os.path.exists(archive):
@@ -54,10 +69,10 @@ def main():
         os.remove(UPDATE)
     for name in SNAPSHOT_FILES:
         src = os.path.join(snapshot, name)
-        if not os.path.exists(src):  # 舊快照沒有 当前焦点.md，就保留現在的
+        if not os.path.exists(src):  # older snapshots lack 当前焦点.md: keep the current one. 舊快照沒有 当前焦点.md，就保留現在的
             continue
         if name == '当前焦点.md' and not focus_from_rewritten(start):
-            continue  # 焦點是讀者或 Claude 手改的，不是被重寫的那幾章改的，留著
+            continue  # focus was edited by hand, not by the rewritten chapters: keep it. 焦點是讀者或 Claude 手改的，不是被重寫的那幾章改的，留著
         shutil.copyfile(src, os.path.join(MEMORY, name))
     print(f'已收起：{"、".join(moved)} → {os.path.relpath(archive, ROOT)}')
     print(f'記憶已退回第 {start - 1} 章寫完時，現在寫的就是第 {start} 章')

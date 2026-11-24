@@ -1,4 +1,13 @@
-"""反覆用的小梗：寫手很容易章章都用一遍（第 4–6 章「忘帶打火機零遞火」連用三章）。
+"""Recurring gags the writer model overuses.
+
+Left to itself, the model reuses the same small joke chapter after chapter
+(chapters 4-6 all had "forgot the lighter, Zero hands him one"). check.py
+compares this chapter with the previous one and flags gags that appear in both;
+compose.py lists the previous chapter's gags so the writer avoids them.
+One entry per line: a human-readable name -> a regex. When you notice a new gag
+showing up every chapter, add a line here.
+
+反覆用的小梗：寫手很容易章章都用一遍（第 4–6 章「忘帶打火機零遞火」連用三章）。
 
 check.py 拿這一章和上一章比，連著出現就報；compose.py 把上一章用過的列給寫手。
 一行一個：梗的說法 → 正則。新發現章章都在用的梗，往這裡加一行。
@@ -19,4 +28,5 @@ GAGS = {
 
 
 def found(text):
+    """Return the names of every gag that appears in `text`.  返回 text 裡出現的梗名。"""
     return [name for name, pattern in GAGS.items() if re.search(pattern, text)]

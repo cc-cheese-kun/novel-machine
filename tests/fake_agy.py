@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""假的 agy，只用來測流程：認提示開頭的角色，寫出對應的文件。
+"""Fake `agy` (the writer CLI) for testing the pipeline without a real model.
+
+It reads the role at the start of the prompt and writes the files that role
+would write. FAKE_HANG=plan|write with FAKE_FLAG=FILE: drop a flag file and
+sleep before (plan) or after (write) the writer saves, so a test can kill -9 it
+to simulate a VM reboot. It deliberately goes out of scope once (edits chapter
+31, leaves a script in tools/) to verify the scope guard restores it.
+FAKE_SHORT=1 makes the first draft too short, to exercise the fix round.
+
+假的 agy，只用來測流程：認提示開頭的角色，寫出對應的文件。
 FAKE_HANG=plan|write 配 FAKE_FLAG=文件：在寫手落盤之前（plan）、或落盤之後（write）留下標記文件就睡著，給測試去 kill -9（模擬 VM 重啟）。
 故意越界一次（改第 31 章、在 tools/ 留腳本），看守衛會不會還原。
 FAKE_SHORT=1 時寫手第一稿故意寫短，測修稿。"""
