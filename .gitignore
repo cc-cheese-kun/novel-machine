@@ -1,0 +1,5 @@
+logs/
+.novel.lock
+__pycache__/
+章节/*/草稿/
+.novel.lock.d/
